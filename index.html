@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>コマラボ - 描いて、回して、カタチで勝負。</title>
+<meta name="description" content="描いて、回して、カタチで勝負。ともだちのコマに挑戦しよう。">
+<meta property="og:title" content="コマラボ - 描いて、回して、カタチで勝負。">
+<meta property="og:description" content="ともだちが作ったコマが待っています。このコマに勝てる？">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary">
+<style>
+  :root{--bg:#0a0f28;--card:#151c42;--line:#2f3a78;--text:#f2f5ff;--muted:#8e98c8;--mint:#38f2c4;--violet:#8b6cff;--gold:#ffd25e}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;color:var(--text);font-family:"Hiragino Sans","Noto Sans JP",system-ui,sans-serif;
+    background:radial-gradient(900px 600px at 85% -10%,rgba(139,108,255,.45),transparent 60%),radial-gradient(700px 500px at 0% 80%,rgba(56,242,196,.14),transparent 60%),linear-gradient(#1a2158,#070b1e) fixed}
+  main{max-width:520px;margin:0 auto;padding:28px 20px 48px}
+  .brand{color:var(--mint);font-weight:800;letter-spacing:.08em}
+  h1{font-size:30px;margin:6px 0 4px}
+  .sub{color:var(--muted);margin:0 0 18px}
+  .card{background:var(--card);border:2px solid var(--line);border-radius:28px;padding:20px;text-align:center}
+  .stage{background:#0f1536;border-radius:22px;padding:14px;display:flex;justify-content:center}
+  canvas{width:min(100%,360px);aspect-ratio:1;image-rendering:pixelated;image-rendering:crisp-edges}
+  .name{font-size:28px;font-weight:800;margin:14px 0 2px}
+  .author{color:var(--muted);margin:0 0 6px}
+  .chal{color:var(--gold);font-weight:800;margin:10px 0 0}
+  .btn{display:block;width:100%;border:0;border-radius:999px;padding:18px;margin-top:14px;font-size:18px;font-weight:800;text-align:center;text-decoration:none;cursor:pointer;font-family:inherit}
+  .primary{background:var(--mint);color:#0a0f28}
+  .secondary{background:#232b55;color:var(--text)}
+  .note{color:var(--muted);font-size:13px;line-height:1.7;margin-top:18px}
+  .error{color:#ff6b8e;font-weight:700}
+  [hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">コマラボ  <span style="color:var(--muted);font-weight:600;letter-spacing:0">描いて、回して、カタチで勝負。</span></div>
+  <h1>そのラクガキが、主役になる。</h1>
+  <p class="sub">ともだちが作ったコマが、あなたを待っています。</p>
+
+  <section class="card" id="view" hidden>
+    <div class="stage"><canvas id="preview" width="48" height="48"></canvas></div>
+    <div class="name" id="name"></div>
+    <p class="author" id="author"></p>
+    <p class="chal">このコマに勝てる？</p>
+    <a class="btn primary" id="open" href="#">アプリで対戦する</a>
+    <button class="btn secondary" id="copy" type="button">コードをコピー(アプリが自動で見つけます)</button>
+  </section>
+
+  <section class="card" id="empty">
+    <p class="name" style="margin-top:0">コマラボ</p>
+    <p class="author">描いて、回して、カタチで勝負。</p>
+    <p id="message">ラクガキが、そのままコマになって戦うゲームです。<br>ともだちから届いたリンクを開くと、そのコマに挑戦できます。</p>
+  </section>
+
+  <p class="note">
+    アプリを開くと、ともだちのコマとすぐ対戦できます。<br>
+    ボタンで開けないときは、「コードをコピー」を押してからアプリを起動してください。コピーしたコードは自動で見つかります。
+    このページは受け取ったコードを表示するだけで、データをサーバーに送りません。
+  </p>
+</main>
+<script>
+// Set this to where the Android app can be downloaded (a store page or an APK link). Leave empty to hide the fallback.
+const APP_URL = "";
+const PACKAGE = "jp.komalab.unity";
+const SCHEME = "komalab";
+
+const $ = id => document.getElementById(id);
+
+function b64urlToBytes(s){
+  s = s.replace(/-/g,"+").replace(/_/g,"/");
+  while(s.length % 4) s += "=";
+  const bin = atob(s), out = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function inflateRaw(bytes){
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  const buffer = await new Response(stream).arrayBuffer();
+  if(buffer.byteLength > 16000) throw new Error("too large");
+  return new Uint8Array(buffer);
+}
+
+// same layout as ShareCode.cs: version, palette, title, author, shot, then 48x48 run-length cells
+async function decode(code){
+  const framed = b64urlToBytes(code);
+  if(framed.length < 4) throw new Error("short");
+  let sum = 0;
+  for(let i=2;i<framed.length;i++) sum = (sum*31 + framed[i]) & 0xFFFF;
+  if(framed[0] !== (sum >> 8) || framed[1] !== (sum & 255)) throw new Error("checksum");
+  const raw = await inflateRaw(framed.subarray(2));
+  let p = 0;
+  if(raw[p++] !== 1) throw new Error("version");
+  const n = raw[p++];
+  if(n < 1 || n > 31) throw new Error("palette");
+  const palette = [];
+  for(let i=0;i<n;i++){ palette.push([raw[p],raw[p+1],raw[p+2]]); p += 3; }
+  const text = () => { const len = raw[p++]; const s = new TextDecoder().decode(raw.subarray(p,p+len)); p += len; return s; };
+  const title = text(), author = text();
+  p += 2; // shot angle and power: used by the app only
+  const cells = new Uint8Array(48*48);
+  let filled = 0;
+  while(filled < cells.length){
+    const value = raw[p++], run = raw[p++];
+    if(!run || filled + run > cells.length || value > n) throw new Error("cells");
+    cells.fill(value, filled, filled+run);
+    filled += run;
+  }
+  return {title, author, palette, cells};
+}
+
+function draw(shape){
+  const canvas = $("preview"), ctx = canvas.getContext("2d");
+  ctx.clearRect(0,0,48,48);
+  // the cells are stored bottom-up like the app's texture, so flip while drawing
+  const px = (x,y) => shape.cells[(47-y)*48 + x];
+  const depth = 3;
+  for(let layer=depth; layer>=0; layer--){
+    for(let y=0;y<48;y++) for(let x=0;x<48;x++){
+      const v = px(x,y);
+      if(!v) continue;
+      const [r,g,b] = shape.palette[v-1];
+      const k = layer === 0 ? 1 : .62;
+      ctx.fillStyle = `rgb(${r*k|0},${g*k|0},${b*k|0})`;
+      ctx.fillRect(x, y + layer*0.5, 1, 1);
+    }
+  }
+}
+
+(async function main(){
+  const m = location.hash.match(/KL1:([A-Za-z0-9_-]+)/) || location.search.match(/KL1:([A-Za-z0-9_-]+)/);
+  if(!m){ return; }
+  const code = m[1];
+  try{
+    const shape = await decode(code);
+    $("name").textContent = shape.title;
+    $("author").textContent = shape.author + " さんのコマ";
+    draw(shape);
+    const full = "KL1:" + code;
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    const fallback = APP_URL ? `;S.browser_fallback_url=${encodeURIComponent(APP_URL)}` : "";
+    $("open").href = isAndroid
+      ? `intent://s/${full}#Intent;scheme=${SCHEME};package=${PACKAGE}${fallback};end`
+      : `${SCHEME}://s/${full}`;
+    $("copy").addEventListener("click", async () => {
+      try{ await navigator.clipboard.writeText(`コマラボで対戦しよう！「${shape.title}」\n${full}`); $("copy").textContent = "コピーしました。アプリを開いてください"; }
+      catch(e){ $("copy").textContent = "コピーできませんでした"; }
+    });
+    $("view").hidden = false;
+    $("empty").hidden = true;
+  }catch(e){
+    $("message").textContent = "このコードを読み取れませんでした。リンクが途中で切れていないか確認してください。";
+    $("message").className = "error";
+  }
+})();
+</script>
+</body>
+</html>
