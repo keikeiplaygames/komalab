@@ -78,11 +78,11 @@ function b64urlToBytes(s){
 async function inflateRaw(bytes){
   const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
   const buffer = await new Response(stream).arrayBuffer();
-  if(buffer.byteLength > 16000) throw new Error("too large");
+  if(buffer.byteLength > 40000) throw new Error("too large");
   return new Uint8Array(buffer);
 }
 
-// same layout as ShareCode.cs: version, palette, title, author, shot, then 48x48 run-length cells
+// same layout as ShareCode.cs: version (1 = 48x48, 2 = grid size follows), palette, title, author, shot, then run-length cells
 async function decode(code){
   const framed = b64urlToBytes(code);
   if(framed.length < 4) throw new Error("short");
@@ -91,15 +91,18 @@ async function decode(code){
   if(framed[0] !== (sum >> 8) || framed[1] !== (sum & 255)) throw new Error("checksum");
   const raw = await inflateRaw(framed.subarray(2));
   let p = 0;
-  if(raw[p++] !== 1) throw new Error("version");
+  const version = raw[p++];
+  if(version !== 1 && version !== 2) throw new Error("version");
+  const grid = version === 1 ? 48 : raw[p++];
+  if(!(grid >= 16 && grid <= 128)) throw new Error("grid");
   const n = raw[p++];
-  if(n < 1 || n > 31) throw new Error("palette");
+  if(n < 1 || n > (version === 1 ? 31 : 63)) throw new Error("palette");
   const palette = [];
   for(let i=0;i<n;i++){ palette.push([raw[p],raw[p+1],raw[p+2]]); p += 3; }
   const text = () => { const len = raw[p++]; const s = new TextDecoder().decode(raw.subarray(p,p+len)); p += len; return s; };
   const title = text(), author = text();
   p += 2; // shot angle and power: used by the app only
-  const cells = new Uint8Array(48*48);
+  const cells = new Uint8Array(grid*grid);
   let filled = 0;
   while(filled < cells.length){
     const value = raw[p++], run = raw[p++];
@@ -107,23 +110,24 @@ async function decode(code){
     cells.fill(value, filled, filled+run);
     filled += run;
   }
-  return {title, author, palette, cells};
+  return {title, author, palette, cells, grid};
 }
 
 function draw(shape){
   const canvas = $("preview"), ctx = canvas.getContext("2d");
-  ctx.clearRect(0,0,48,48);
+  const G = shape.grid;
+  canvas.width = G; canvas.height = G;
   // the cells are stored bottom-up like the app's texture, so flip while drawing
-  const px = (x,y) => shape.cells[(47-y)*48 + x];
-  const depth = 3;
+  const px = (x,y) => shape.cells[(G-1-y)*G + x];
+  const depth = 3, step = G/96;
   for(let layer=depth; layer>=0; layer--){
-    for(let y=0;y<48;y++) for(let x=0;x<48;x++){
+    for(let y=0;y<G;y++) for(let x=0;x<G;x++){
       const v = px(x,y);
       if(!v) continue;
       const [r,g,b] = shape.palette[v-1];
       const k = layer === 0 ? 1 : .62;
       ctx.fillStyle = `rgb(${r*k|0},${g*k|0},${b*k|0})`;
-      ctx.fillRect(x, y + layer*0.5, 1, 1);
+      ctx.fillRect(x, y + layer*step, 1, 1);
     }
   }
 }
